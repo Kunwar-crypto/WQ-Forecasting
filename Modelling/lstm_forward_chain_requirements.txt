@@ -1,5 +1,0 @@
-numpy
-openpyxl
-pandas
-scikit-learn
-tensorflow
