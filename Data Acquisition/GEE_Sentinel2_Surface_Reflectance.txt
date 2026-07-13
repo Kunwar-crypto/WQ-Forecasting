@@ -1,0 +1,345 @@
+// =============================================================================
+// GENERAL SENTINEL-2 SURFACE-REFLECTANCE EXTRACTION AND EXPORT WORKFLOW
+// Google Earth Engine JavaScript
+//
+// Purpose
+//   1. Retrieve Sentinel-2 Level-2A surface reflectance.
+//   2. Mask clouds/cirrus using QA60.
+//   3. Mask cloud shadow, cloud, cirrus, snow/ice, no-data, and defective
+//      pixels using the Scene Classification Layer (SCL).
+//   4. Plot an ROI-mean reflectance time series.
+//   5. Export ROI-mean reflectance values for all acquisitions as CSV.
+//   6. Export pixel-level reflectance and a cloud-masked GeoTIFF for one date.
+//
+// Before running
+//   - Draw or import a station/river ROI in the Code Editor.
+//   - Rename the imported geometry variable to: geometry
+//   - Update the configuration values below.
+// =============================================================================
+
+
+// -----------------------------------------------------------------------------
+// 1. USER CONFIGURATION
+// -----------------------------------------------------------------------------
+
+var stationName = 'Station_Name';
+
+// Draw/import a polygon in the GEE Code Editor and name it "geometry".
+var roi = geometry;
+
+var startDate = '2022-01-01';
+
+// Earth Engine filterDate uses an exclusive end date.
+// Use the first day after the intended final date.
+var endDate = '2022-07-01';
+
+var maximumSceneCloudPercentage = 80;
+
+// Choose one available acquisition date printed in the Console.
+var imageExportDate = '2022-03-01';
+
+// Drive folders.
+var tableExportFolder = 'Sentinel2_Surface_Reflectance_Tables';
+var imageExportFolder = 'Sentinel2_Surface_Reflectance_Images';
+
+// Reflectance bands available in Sentinel-2 Level-2A.
+var reflectanceBands = [
+  'B1', 'B2', 'B3', 'B4', 'B5', 'B6',
+  'B7', 'B8', 'B8A', 'B9', 'B11', 'B12'
+];
+
+// Use 10 m to retain the finest Sentinel-2 grid.
+// Bands with coarser native resolution will be resampled by Earth Engine
+// during reduction/export.
+var workingScale = 10;
+
+
+// -----------------------------------------------------------------------------
+// 2. QA60 + SCL CLOUD MASK AND REFLECTANCE SCALING
+// -----------------------------------------------------------------------------
+
+function maskAndScaleSentinel2(image) {
+
+  // QA60 bits:
+  // bit 10 = opaque cloud
+  // bit 11 = cirrus
+  var qa60 = image.select('QA60');
+  var opaqueCloudBit = 1 << 10;
+  var cirrusBit = 1 << 11;
+
+  var qa60Clear = qa60.bitwiseAnd(opaqueCloudBit).eq(0)
+    .and(qa60.bitwiseAnd(cirrusBit).eq(0))
+    // Some acquisition periods do not contain populated QA60 values.
+    // Treat missing QA60 pixels as provisionally clear and let SCL provide
+    // the required cloud/shadow classification for those pixels.
+    .unmask(1);
+
+  // SCL classes masked:
+  // 0  = no data
+  // 1  = saturated or defective
+  // 3  = cloud shadow
+  // 8  = cloud, medium probability
+  // 9  = cloud, high probability
+  // 10 = thin cirrus
+  // 11 = snow or ice
+  //
+  // Classes 2, 4, 5, 6, and 7 are retained. In particular, class 6 is water.
+  var scl = image.select('SCL');
+
+  var sclClear = scl.neq(0)
+    .and(scl.neq(1))
+    .and(scl.neq(3))
+    .and(scl.neq(8))
+    .and(scl.neq(9))
+    .and(scl.neq(10))
+    .and(scl.neq(11));
+
+  // Sentinel-2 SR integer values use a scale factor of 0.0001.
+  var scaledReflectance = image
+    .select(reflectanceBands)
+    .multiply(0.0001)
+    .toFloat();
+
+  return scaledReflectance
+    .updateMask(qa60Clear)
+    .updateMask(sclClear)
+    .copyProperties(image, image.propertyNames())
+    .set('acquisition_date',
+      ee.Date(image.get('system:time_start')).format('YYYY-MM-dd'));
+}
+
+
+// -----------------------------------------------------------------------------
+// 3. BUILD THE SENTINEL-2 SURFACE-REFLECTANCE COLLECTION
+// -----------------------------------------------------------------------------
+
+var sentinel2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterBounds(roi)
+  .filterDate(startDate, endDate)
+  .filter(
+    ee.Filter.lte(
+      'CLOUDY_PIXEL_PERCENTAGE',
+      maximumSceneCloudPercentage
+    )
+  )
+  .map(maskAndScaleSentinel2)
+  .sort('system:time_start');
+
+print('Number of retained Sentinel-2 acquisitions:', sentinel2.size());
+
+var availableDates = sentinel2.aggregate_array('acquisition_date');
+print('Available acquisition dates:', availableDates);
+
+
+// -----------------------------------------------------------------------------
+// 4. VISUALIZATION
+// -----------------------------------------------------------------------------
+
+var trueColourVisualization = {
+  bands: ['B4', 'B3', 'B2'],
+  min: 0.0,
+  max: 0.30,
+  gamma: 1.3
+};
+
+Map.centerObject(roi, 14);
+Map.addLayer(
+  ee.Image().paint(roi, 1, 2),
+  {palette: ['FF0000']},
+  stationName + '_ROI'
+);
+
+var medianComposite = sentinel2.median().clip(roi);
+
+Map.addLayer(
+  medianComposite,
+  trueColourVisualization,
+  stationName + '_cloud_masked_median',
+  true
+);
+
+
+// -----------------------------------------------------------------------------
+// 5. ROI-MEAN REFLECTANCE TIME-SERIES CHART
+// -----------------------------------------------------------------------------
+
+var chart = ui.Chart.image.series({
+  imageCollection: sentinel2,
+  region: roi,
+  reducer: ee.Reducer.mean(),
+  scale: workingScale,
+  xProperty: 'system:time_start'
+})
+.setOptions({
+  title: stationName + ': cloud-masked Sentinel-2 surface reflectance',
+  hAxis: {title: 'Acquisition date'},
+  vAxis: {title: 'Surface reflectance'},
+  lineWidth: 1,
+  pointSize: 3
+});
+
+print(chart);
+
+
+// -----------------------------------------------------------------------------
+// 6. EXPORT ONE ROI-MEAN RECORD PER ACQUISITION AS CSV
+// -----------------------------------------------------------------------------
+
+function imageToRoiMeanFeature(image) {
+
+  var meanReflectance = image.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: roi,
+    scale: workingScale,
+    maxPixels: 1e9,
+    tileScale: 4
+  });
+
+  return ee.Feature(null, meanReflectance)
+    .set({
+      station: stationName,
+      acquisition_date:
+        ee.Date(image.get('system:time_start')).format('YYYY-MM-dd'),
+      system_index: image.get('system:index'),
+      scene_cloud_percentage: image.get('CLOUDY_PIXEL_PERCENTAGE')
+    });
+}
+
+var roiMeanTimeSeries = ee.FeatureCollection(
+  sentinel2.map(imageToRoiMeanFeature)
+);
+
+print('ROI-mean reflectance table preview:', roiMeanTimeSeries.limit(5));
+
+Export.table.toDrive({
+  collection: roiMeanTimeSeries,
+  description: stationName + '_S2_SR_ROI_mean_timeseries',
+  folder: tableExportFolder,
+  fileNamePrefix: stationName + '_S2_SR_ROI_mean_timeseries',
+  fileFormat: 'CSV',
+  selectors: [
+    'station',
+    'acquisition_date',
+    'system_index',
+    'scene_cloud_percentage',
+    'B1', 'B2', 'B3', 'B4', 'B5', 'B6',
+    'B7', 'B8', 'B8A', 'B9', 'B11', 'B12'
+  ]
+});
+
+
+// -----------------------------------------------------------------------------
+// 7. SELECT ONE ACQUISITION DATE FOR PIXEL AND IMAGE EXPORT
+// -----------------------------------------------------------------------------
+
+var selectedStart = ee.Date(imageExportDate);
+var selectedEnd = selectedStart.advance(1, 'day');
+
+// Mosaic is used in case the ROI intersects more than one Sentinel-2 tile
+// on the selected acquisition date.
+var selectedImage = sentinel2
+  .filterDate(selectedStart, selectedEnd)
+  .mosaic()
+  .clip(roi);
+
+print(
+  'Number of images on selected export date:',
+  sentinel2.filterDate(selectedStart, selectedEnd).size()
+);
+
+Map.addLayer(
+  selectedImage,
+  trueColourVisualization,
+  stationName + '_' + imageExportDate,
+  false
+);
+
+
+// -----------------------------------------------------------------------------
+// 8. EXPORT PIXEL-LEVEL SURFACE REFLECTANCE AS CSV
+// -----------------------------------------------------------------------------
+
+var imageWithCoordinates = selectedImage
+  .addBands(ee.Image.pixelLonLat());
+
+var sampledPixels = imageWithCoordinates.sample({
+  region: roi,
+  scale: workingScale,
+  geometries: true,
+  tileScale: 4
+});
+
+Export.table.toDrive({
+  collection: sampledPixels,
+  description:
+    stationName + '_S2_SR_pixels_' + imageExportDate.replace(/-/g, ''),
+  folder: tableExportFolder,
+  fileNamePrefix:
+    stationName + '_S2_SR_pixels_' + imageExportDate.replace(/-/g, ''),
+  fileFormat: 'CSV',
+  selectors: [
+    'longitude',
+    'latitude',
+    'B1', 'B2', 'B3', 'B4', 'B5', 'B6',
+    'B7', 'B8', 'B8A', 'B9', 'B11', 'B12',
+    '.geo'
+  ]
+});
+
+
+// -----------------------------------------------------------------------------
+// 9. EXPORT THE CLOUD-MASKED SURFACE-REFLECTANCE IMAGE AS GEOTIFF
+// -----------------------------------------------------------------------------
+
+Export.image.toDrive({
+  image: selectedImage.select(reflectanceBands),
+  description:
+    stationName + '_S2_SR_image_' + imageExportDate.replace(/-/g, ''),
+  folder: imageExportFolder,
+  fileNamePrefix:
+    stationName + '_S2_SR_image_' + imageExportDate.replace(/-/g, ''),
+  region: roi,
+  scale: workingScale,
+  maxPixels: 1e13,
+  fileFormat: 'GeoTIFF',
+  formatOptions: {
+    cloudOptimized: true
+  }
+});
+
+
+// -----------------------------------------------------------------------------
+// 10. OPTIONAL INTERACTIVE IMAGE DISPLAY
+// -----------------------------------------------------------------------------
+
+var dateLabel = ui.Label(
+  'Click a time-series point to display the corresponding acquisition.'
+);
+Map.add(dateLabel);
+
+chart.onClick(function(xValue) {
+
+  if (!xValue) {
+    return;
+  }
+
+  var clickedDate = ee.Date(xValue);
+  var clickedImage = sentinel2
+    .filterDate(clickedDate, clickedDate.advance(1, 'day'))
+    .mosaic()
+    .clip(roi);
+
+  Map.layers().set(
+    1,
+    ui.Map.Layer(
+      clickedImage,
+      trueColourVisualization,
+      stationName + '_clicked_image'
+    )
+  );
+
+  dateLabel.setValue(
+    'Displayed acquisition: ' +
+    new Date(xValue).toISOString().slice(0, 10)
+  );
+});
