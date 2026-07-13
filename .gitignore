@@ -1,0 +1,59 @@
+# Python temporary files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Jupyter Notebook temporary files
+.ipynb_checkpoints/
+
+# Python environments
+.venv/
+venv/
+env/
+
+# IDE and editor settings
+.vscode/
+.idea/
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+
+# Credentials and private configuration
+.env
+.cdsapirc
+*.key
+*.pem
+
+# Original and processed datasets
+data/
+*.xlsx
+*.xls
+*.csv
+*.nc
+*.nc4
+*.grib
+*.grib2
+*.zip
+
+# Satellite imagery and geospatial outputs
+*.tif
+*.tiff
+*.jp2
+
+# Model and preprocessing outputs
+outputs/
+results/
+trained_models/
+training_histories/
+*.keras
+*.h5
+*.pkl
+*.pickle
+*.joblib
+
+# Log and temporary files
+*.log
+*.tmp
+*.temp
