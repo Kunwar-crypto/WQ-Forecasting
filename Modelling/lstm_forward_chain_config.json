@@ -1,0 +1,74 @@
+{
+  "data": {
+    "reference_file": "data/ERA5_Monthly.xlsx",
+    "reference_sheet": 0,
+    "reference_date_columns": [
+      "Month_Start",
+      "Month"
+    ],
+    "lead_directory": "data/c3s_lead_files",
+    "lead_file_pattern": "Rolling_Forecast_Lead_{lead}.xlsx",
+    "lead_sheet": 0,
+    "lead_date_columns": [
+      "target_month",
+      "Month_Start",
+      "Month"
+    ],
+    "target": "Turbidity",
+    "history_features": [
+      "Rainfall",
+      "Surface Runoff",
+      "Air Temperature",
+      "NDTI"
+    ],
+    "future_features": [
+      "Rainfall",
+      "Surface Runoff",
+      "Air Temperature",
+      "NDTI"
+    ]
+  },
+  "forecast": {
+    "leads": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "lag_steps": [
+      1,
+      2
+    ],
+    "lookback_months": 2,
+    "initial_train_start": "2019-01",
+    "issue_start": "2022-01",
+    "issue_end": "2023-12",
+    "retrain_frequency": "monthly",
+    "fixed_train_end": null,
+    "nowcast_policy": "persistence",
+    "auto_trim_to_observations": true
+  },
+  "model": {
+    "epochs": 250,
+    "batch_size": 8,
+    "learning_rate": 0.001,
+    "first_lstm_units": 32,
+    "second_lstm_units": 16,
+    "dropout_rate": 0.3,
+    "patience": 15,
+    "validation_fraction": 0.2,
+    "huber_delta": 1.0,
+    "random_seed": 42,
+    "target_scaling": false,
+    "clip_predictions_at_zero": true,
+    "verbose": 0
+  },
+  "output": {
+    "output_directory": "outputs/lstm_forward_chain",
+    "run_name": "dual_branch_lstm",
+    "save_per_lead_workbook": true,
+    "save_models": false
+  }
+}
